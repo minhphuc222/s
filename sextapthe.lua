@@ -1,9 +1,9 @@
 -- Enhanced HTTP Tracker với PC API Connection
 local httpTracker = {}
 
--- Cấu hình server PC (thay đổi IP này thành IP máy tính của bạn)
+-- Cấu hình server PC (sử dụng 127.0.0.1 thay vì localhost)
 httpTracker.serverConfig = {
-    host = "localhost", -- Thay đổi thành IP máy tính của bạn
+    host = "127.0.0.1", -- Sử dụng IP thay vì tên miền
     port = 8888,
     enabled = true
 }
