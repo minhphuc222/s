@@ -1,27 +1,77 @@
--- Enhanced HTTP Tracker với PC API Connection
+-- Enhanced HTTP Tracker với PC API Connection và Auto IP Detection
 local httpTracker = {}
 
--- Cấu hình server PC (sử dụng 127.0.0.1 thay vì localhost)
+-- Cấu hình server PC với multiple IP options
 httpTracker.serverConfig = {
-    host = "127.0.0.1", -- Sử dụng IP thay vì tên miền
+    -- Thử các IP khác nhau theo thứ tự ưu tiên
+    hosts = {
+        "192.168.0.197", -- Placeholder - sẽ được thay bằng IP thực
+        "127.0.0.1",
+        "localhost"
+    },
     port = 8888,
-    enabled = true
+    enabled = true,
+    activeHost = nil -- IP đã kết nối thành công
 }
+
+-- Hàm auto-detect IP server
+httpTracker.findWorkingHost = function()
+    httpTracker.log("Đang tìm kiếm server PC...")
+    
+    for _, host in ipairs(httpTracker.serverConfig.hosts) do
+        local success, result = pcall(function()
+            local testUrl = string.format("http://%s:%d/status", host, httpTracker.serverConfig.port)
+            
+            if request then
+                local response = request({
+                    Url = testUrl,
+                    Method = "GET",
+                    Timeout = 3
+                })
+                
+                if response.Success and response.StatusCode == 200 then
+                    httpTracker.serverConfig.activeHost = host
+                    httpTracker.logSuccess("Kết nối thành công với server tại: " .. host)
+                    return true
+                end
+            end
+            
+            return false
+        end)
+        
+        if success and result then
+            return true
+        else
+            httpTracker.log("Không thể kết nối đến: " .. host, "WARNING")
+        end
+    end
+    
+    httpTracker.logError("Không tìm thấy server PC nào đang hoạt động!")
+    httpTracker.serverConfig.enabled = false
+    return false
+end
 
 -- Khởi tạo
 httpTracker.startTime = os.time()
 httpTracker.requests = {}
 httpTracker.serverLogs = {}
 
--- Hàm gửi log lên server PC
+-- Hàm gửi log lên server PC với auto-retry
 httpTracker.sendToServer = function(logType, message, details)
     if not httpTracker.serverConfig.enabled then
         return
     end
     
+    -- Nếu chưa có activeHost, thử tìm host khả dụng
+    if not httpTracker.serverConfig.activeHost then
+        if not httpTracker.findWorkingHost() then
+            return
+        end
+    end
+    
     local success, result = pcall(function()
         local serverUrl = string.format("http://%s:%d/log", 
-            httpTracker.serverConfig.host, 
+            httpTracker.serverConfig.activeHost, 
             httpTracker.serverConfig.port)
         
         local logData = {
@@ -41,7 +91,8 @@ httpTracker.sendToServer = function(logType, message, details)
                 Headers = {
                     ["Content-Type"] = "application/json"
                 },
-                Body = jsonData
+                Body = jsonData,
+                Timeout = 5
             })
             return response.Success
         end
@@ -50,13 +101,14 @@ httpTracker.sendToServer = function(logType, message, details)
     end)
     
     if not success then
-        -- Fallback: lưu log locally nếu không gửi được
-        table.insert(httpTracker.serverLogs, {
-            type = logType,
-            message = message,
-            time = os.time(),
-            details = details
-        })
+        -- Nếu gửi thất bại, thử tìm host khác
+        httpTracker.serverConfig.activeHost = nil
+        httpTracker.logWarning("Mất kết nối server, đang thử kết nối lại...")
+        
+        -- Thử gửi lại với host khác
+        if httpTracker.findWorkingHost() then
+            httpTracker.sendToServer(logType, message, details)
+        end
     end
 end
 
@@ -103,12 +155,10 @@ httpTracker.logSuccess = function(message, details)
     httpTracker.sendToServer("SUCCESS", message, details)
 end
 
--- Thông báo khởi động
-httpTracker.logSuccess("Hệ thống theo dõi HTTP đã khởi động", {
-    server_host = httpTracker.serverConfig.host,
-    server_port = httpTracker.serverConfig.port,
-    start_time = os.date("%d/%m/%Y %H:%M:%S", httpTracker.startTime)
-})
+-- Thông báo khởi động và tìm server
+httpTracker.log("Đang khởi động hệ thống theo dõi HTTP...")
+httpTracker.findWorkingHost()
+httpTracker.displayConnectionInfo()
 
 -- Lưu các hàm HTTP gốc
 if request then 
@@ -292,41 +342,26 @@ if loadstring then
     end
 end
 
--- Hàm kiểm tra kết nối server
-httpTracker.testServerConnection = function()
-    httpTracker.log("Đang kiểm tra kết nối server PC...")
+-- Hàm kiểm tra và hiển thị thông tin kết nối
+httpTracker.displayConnectionInfo = function()
+    httpTracker.log("=== THÔNG TIN KẾT NỐI SERVER ===", "INFO")
     
-    local success, result = pcall(function()
-        local serverUrl = string.format("http://%s:%d/status", 
-            httpTracker.serverConfig.host, 
-            httpTracker.serverConfig.port)
-        
-        if request then
-            local response = request({
-                Url = serverUrl,
-                Method = "GET",
-                Timeout = 5
-            })
-            
-            if response.Success and response.StatusCode == 200 then
-                httpTracker.logSuccess("Kết nối server PC thành công!")
-                return true
-            end
-        end
-        
-        return false
-    end)
-    
-    if not success or not result then
-        httpTracker.logWarning("Không thể kết nối server PC", {
-            server_host = httpTracker.serverConfig.host,
-            server_port = httpTracker.serverConfig.port,
-            suggestion = "Kiểm tra IP và port server, đảm bảo server đang chạy"
+    if httpTracker.serverConfig.activeHost then
+        httpTracker.logSuccess("Đang kết nối với server tại: " .. httpTracker.serverConfig.activeHost .. ":" .. httpTracker.serverConfig.port)
+        httpTracker.sendToServer("INFO", "Roblox tracker đã kết nối thành công", {
+            connected_host = httpTracker.serverConfig.activeHost,
+            port = httpTracker.serverConfig.port,
+            connection_time = os.date("%d/%m/%Y %H:%M:%S", os.time())
         })
-        httpTracker.serverConfig.enabled = false
+    else
+        httpTracker.logError("Chưa kết nối được với server PC")
+        httpTracker.log("Vui lòng kiểm tra:")
+        httpTracker.log("1. Server Python đã chạy chưa?")
+        httpTracker.log("2. IP address trong danh sách hosts có đúng không?")
+        httpTracker.log("3. Port 8888 có bị chặn bởi firewall không?")
     end
     
-    return success and result
+    httpTracker.log("=====================================")
 end
 
 -- Hàm tổng kết chi tiết
